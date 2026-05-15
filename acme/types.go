@@ -57,6 +57,10 @@ var (
 	// ErrNoAccount indicates that the Client's key has not been registered with the CA.
 	ErrNoAccount = errors.New("acme: account does not exist")
 
+	// ErrRenewalInfoNotSupported indicates that the CA does not support the
+	// ACME Renewal Information (ARI) extension defined in RFC 9773.
+	ErrRenewalInfoNotSupported = errors.New("acme: renewal information is not supported by the CA")
+
 	// errPreAuthorizationNotSupported indicates that the server does not
 	// support pre-authorization of identifiers.
 	errPreAuthorizationNotSupported = errors.New("acme: pre-authorization is not supported")
@@ -315,6 +319,10 @@ type Directory struct {
 	// ExternalAccountRequired indicates that the CA requires for all account-related
 	// requests to include external account binding information.
 	ExternalAccountRequired bool
+
+	// RenewalInfoURL is the ACME Renewal Information (ARI) endpoint as defined
+	// in RFC 9773. An empty string indicates that the CA does not support ARI.
+	RenewalInfoURL string
 }
 
 // Order represents a client's request for a certificate.

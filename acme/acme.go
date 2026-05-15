@@ -178,13 +178,14 @@ func (c *Client) Discover(ctx context.Context) (Directory, error) {
 	c.addNonce(res.Header)
 
 	var v struct {
-		Reg       string `json:"newAccount"`
-		Authz     string `json:"newAuthz"`
-		Order     string `json:"newOrder"`
-		Revoke    string `json:"revokeCert"`
-		Nonce     string `json:"newNonce"`
-		KeyChange string `json:"keyChange"`
-		Meta      struct {
+		Reg         string `json:"newAccount"`
+		Authz       string `json:"newAuthz"`
+		Order       string `json:"newOrder"`
+		Revoke      string `json:"revokeCert"`
+		Nonce       string `json:"newNonce"`
+		KeyChange   string `json:"keyChange"`
+		RenewalInfo string `json:"renewalInfo"`
+		Meta        struct {
 			Terms        string   `json:"termsOfService"`
 			Website      string   `json:"website"`
 			CAA          []string `json:"caaIdentities"`
@@ -204,6 +205,7 @@ func (c *Client) Discover(ctx context.Context) (Directory, error) {
 		RevokeURL:               v.Revoke,
 		NonceURL:                v.Nonce,
 		KeyChangeURL:            v.KeyChange,
+		RenewalInfoURL:          v.RenewalInfo,
 		Terms:                   v.Meta.Terms,
 		Website:                 v.Meta.Website,
 		CAA:                     v.Meta.CAA,
