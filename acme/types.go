@@ -61,6 +61,12 @@ var (
 	// ACME Renewal Information (ARI) extension defined in RFC 9773.
 	ErrRenewalInfoNotSupported = errors.New("acme: renewal information is not supported by the CA")
 
+	// ErrAlreadyReplaced indicates that an order's "replaces" field referred to
+	// a certificate that has already been marked as replaced by another order.
+	// It corresponds to the "urn:ietf:params:acme:error:alreadyReplaced" ACME
+	// error type defined in RFC 9773 Section 5.
+	ErrAlreadyReplaced = errors.New("acme: certificate has already been replaced")
+
 	// errPreAuthorizationNotSupported indicates that the server does not
 	// support pre-authorization of identifiers.
 	errPreAuthorizationNotSupported = errors.New("acme: pre-authorization is not supported")
@@ -379,6 +385,12 @@ type Order struct {
 	// CertURL points to the certificate that has been issued in response to this order.
 	CertURL string
 
+	// Replaces is the ARI certificate identifier of the certificate that this
+	// order is intended to replace, as defined in RFC 9773 Section 5. It is
+	// set when an order has been created with the WithOrderReplaces option,
+	// and may be echoed back by the CA on subsequent reads of the order.
+	Replaces string
+
 	// The error that occurred while processing the order as received from a CA, if any.
 	Error *Error
 }
@@ -398,6 +410,34 @@ func WithOrderNotAfter(t time.Time) OrderOption {
 	return orderNotAfterOpt(t)
 }
 
+// WithOrderReplaces marks the new order as replacing the given certificate,
+// as defined in RFC 9773 Section 5. The certificate's ARI identifier is
+// derived from its Authority Key Identifier and serial number.
+//
+// Signaling replacement lets the CA distinguish a renewal from a fresh
+// issuance, which it may use to:
+//   - apply a separate, typically more permissive renewal rate limit
+//     instead of the per-name issuance limit;
+//   - mark the prior certificate as replaced so that subsequent ARI
+//     lookups for it advise immediate renewal;
+//   - reject concurrent renewals of the same certificate with the
+//     alreadyReplaced error, surfaced here as ErrAlreadyReplaced, so
+//     racing automations don't issue duplicates.
+//
+// RFC 9773 does not specify how a CA should compare the identifier set in
+// the new order against the SAN entries of the replaced certificate, so
+// behavior varies between ACME servers. Let's Encrypt requires the new
+// order's identifiers to match the replaced certificate's Subject
+// Alternative Names exactly; an order whose identifier set differs (adds,
+// drops, or alters a name) will be rejected, and the caller should reissue
+// without WithOrderReplaces. Other CAs may be more permissive.
+//
+// AuthorizeOrder returns an error if the certificate is missing the fields
+// required to derive that identifier.
+func WithOrderReplaces(cert *x509.Certificate) OrderOption {
+	return orderReplacesOpt{cert}
+}
+
 type orderNotBeforeOpt time.Time
 
 func (orderNotBeforeOpt) privateOrderOpt() {}
@@ -405,6 +445,10 @@ func (orderNotBeforeOpt) privateOrderOpt() {}
 type orderNotAfterOpt time.Time
 
 func (orderNotAfterOpt) privateOrderOpt() {}
+
+type orderReplacesOpt struct{ cert *x509.Certificate }
+
+func (orderReplacesOpt) privateOrderOpt() {}
 
 // Authorization encodes an authorization response.
 type Authorization struct {

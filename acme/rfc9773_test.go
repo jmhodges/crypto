@@ -5,9 +5,11 @@
 package acme
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -221,4 +223,97 @@ func TestRFC9773_FetchRenewalInfo_NoRetryAfter(t *testing.T) {
 	if _, ok := info.NextFetch(); ok {
 		t.Errorf("info.NextFetch ok = true; want false (Retry-After absent)")
 	}
+}
+
+func TestRFC9773_AuthorizeOrder_Replaces(t *testing.T) {
+	cert := &x509.Certificate{
+		AuthorityKeyId: []byte{0x69, 0x88, 0x5b, 0x6b, 0x87, 0x46, 0x40, 0x41, 0xe1, 0xb3,
+			0x7b, 0x84, 0x7b, 0xa0, 0xae, 0x2c, 0xde, 0x01, 0xc8, 0xd4},
+		SerialNumber: big.NewInt(0x87654321),
+	}
+	wantReplaces, err := certID(cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := newACMEServer()
+	s.handle("/acme/new-account", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", s.url("/accounts/1"))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "valid"}`))
+	})
+	s.handle("/acme/new-order", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := readBodyJWSPayload(r)
+		if !bytes.Contains(body, []byte(`"replaces":"`+wantReplaces+`"`)) {
+			t.Errorf("new-order request body missing replaces=%q; got %s", wantReplaces, body)
+		}
+		w.Header().Set("Location", s.url("/orders/1"))
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{
+			"status": "pending",
+			"identifiers": [{"type":"dns", "value":"example.org"}],
+			"authorizations": [%q],
+			"replaces": %q
+		}`, s.url("/authz/1"), wantReplaces)
+	})
+	s.start()
+	defer s.close()
+
+	cl := &Client{Key: testKeyEC, DirectoryURL: s.url("/")}
+	o, err := cl.AuthorizeOrder(context.Background(), DomainIDs("example.org"),
+		WithOrderReplaces(cert),
+	)
+	if err != nil {
+		t.Fatalf("AuthorizeOrder: %v", err)
+	}
+	if o.Replaces != wantReplaces {
+		t.Errorf("o.Replaces = %q; want %q", o.Replaces, wantReplaces)
+	}
+}
+
+func TestRFC9773_AuthorizeOrder_AlreadyReplaced(t *testing.T) {
+	s := newACMEServer()
+	s.handle("/acme/new-account", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", s.url("/accounts/1"))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "valid"}`))
+	})
+	s.handle("/acme/new-order", func(w http.ResponseWriter, r *http.Request) {
+		s.error(w, &wireError{
+			Status: http.StatusConflict,
+			Type:   "urn:ietf:params:acme:error:alreadyReplaced",
+			Detail: "certificate has already been replaced",
+		})
+	})
+	s.start()
+	defer s.close()
+
+	cert := &x509.Certificate{
+		AuthorityKeyId: []byte{1, 2, 3, 4},
+		SerialNumber:   big.NewInt(42),
+	}
+	cl := &Client{Key: testKeyEC, DirectoryURL: s.url("/")}
+	_, err := cl.AuthorizeOrder(context.Background(), DomainIDs("example.org"),
+		WithOrderReplaces(cert),
+	)
+	if !errors.Is(err, ErrAlreadyReplaced) {
+		t.Errorf("AuthorizeOrder error = %v; want ErrAlreadyReplaced", err)
+	}
+}
+
+// readBodyJWSPayload parses the JWS request body and returns the decoded payload bytes.
+func readBodyJWSPayload(r *http.Request) ([]byte, error) {
+	var jws struct {
+		Payload string `json:"payload"`
+	}
+	if err := decodeJSONBody(r, &jws); err != nil {
+		return nil, err
+	}
+	return base64.RawURLEncoding.DecodeString(jws.Payload)
+}
+
+func decodeJSONBody(r *http.Request, v interface{}) error {
+	defer r.Body.Close()
+	dec := json.NewDecoder(r.Body)
+	return dec.Decode(v)
 }
