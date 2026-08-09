@@ -198,6 +198,13 @@ func (c *Client) accountKeyRollover(ctx context.Context, newKey crypto.Signer) e
 // Once all authorizations are satisfied, the caller will typically want to poll
 // order status using WaitOrder until it's in StatusReady state.
 // To finalize the order and obtain a certificate, the caller submits a CSR with CreateOrderCert.
+//
+// To renew an existing certificate, pass WithOrderReplaces to signal that the new
+// order replaces a prior certificate. This may unlock a more permissive renewal
+// rate limit at the CA, mark the prior certificate as replaced in the CA's ACME
+// Renewal Information (ARI) data, and protect against duplicate concurrent
+// renewals by causing one of the racing orders to fail with ErrAlreadyReplaced.
+// See RFC 9773 for details.
 func (c *Client) AuthorizeOrder(ctx context.Context, id []AuthzID, opt ...OrderOption) (*Order, error) {
 	dir, err := c.Discover(ctx)
 	if err != nil {
@@ -208,6 +215,7 @@ func (c *Client) AuthorizeOrder(ctx context.Context, id []AuthzID, opt ...OrderO
 		Identifiers []wireAuthzID `json:"identifiers"`
 		NotBefore   string        `json:"notBefore,omitempty"`
 		NotAfter    string        `json:"notAfter,omitempty"`
+		Replaces    string        `json:"replaces,omitempty"`
 	}{}
 	for _, v := range id {
 		req.Identifiers = append(req.Identifiers, wireAuthzID{
@@ -221,6 +229,12 @@ func (c *Client) AuthorizeOrder(ctx context.Context, id []AuthzID, opt ...OrderO
 			req.NotBefore = time.Time(o).Format(time.RFC3339)
 		case orderNotAfterOpt:
 			req.NotAfter = time.Time(o).Format(time.RFC3339)
+		case orderReplacesOpt:
+			id, err := certID(o.cert)
+			if err != nil {
+				return nil, err
+			}
+			req.Replaces = id
 		default:
 			// Package's fault if we let this happen.
 			panic(fmt.Sprintf("unsupported order option type %T", o))
@@ -229,10 +243,18 @@ func (c *Client) AuthorizeOrder(ctx context.Context, id []AuthzID, opt ...OrderO
 
 	res, err := c.post(ctx, nil, dir.OrderURL, req, wantStatus(http.StatusCreated))
 	if err != nil {
+		if isAlreadyReplaced(err) {
+			return nil, ErrAlreadyReplaced
+		}
 		return nil, err
 	}
 	defer res.Body.Close()
 	return responseOrder(res)
+}
+
+func isAlreadyReplaced(err error) bool {
+	e, ok := err.(*Error)
+	return ok && e.ProblemType == "urn:ietf:params:acme:error:alreadyReplaced"
 }
 
 // GetOrder retrieves an order identified by the given URL.
@@ -308,6 +330,7 @@ func responseOrder(res *http.Response) (*Order, error) {
 		Authorizations []string
 		Finalize       string
 		Certificate    string
+		Replaces       string
 	}
 	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
 		return nil, fmt.Errorf("acme: error reading order: %v", err)
@@ -321,6 +344,7 @@ func responseOrder(res *http.Response) (*Order, error) {
 		AuthzURLs:   v.Authorizations,
 		FinalizeURL: v.Finalize,
 		CertURL:     v.Certificate,
+		Replaces:    v.Replaces,
 	}
 	for _, id := range v.Identifiers {
 		o.Identifiers = append(o.Identifiers, AuthzID{Type: id.Type, Value: id.Value})
